@@ -25,9 +25,11 @@ import torch
 from forge.actors.reference_model import ReferenceModel
 from forge.controller import ForgeActor
 from forge.controller.provisioner import shutdown
+from forge.forge_engine_config import ForgeModelIdentity
 from forge.util.config import _resolve_hf_model_path
 from monarch.actor import endpoint
-from torchtitan.config.job_config import Checkpoint, Compile, Model, Parallelism
+from torchtitan.components.checkpoint import CheckpointManager
+from torchtitan.config.configs import CompileConfig, ParallelismConfig
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 
@@ -63,12 +65,12 @@ def create_titan_config(model_name: str, model_family: str, model_flavor: str) -
     """Create torchtitan configuration for the given model."""
     resolved_hf_model_path = _resolve_hf_model_path(f"hf://{model_name}")
     config = {
-        "model": Model(
+        "model": ForgeModelIdentity(
             name=model_family,
             flavor=model_flavor,
             hf_assets_path=resolved_hf_model_path,
         ),
-        "parallelism": Parallelism(
+        "parallelism": ParallelismConfig(
             data_parallel_replicate_degree=1,
             data_parallel_shard_degree=1,
             tensor_parallel_degree=1,
@@ -76,13 +78,13 @@ def create_titan_config(model_name: str, model_family: str, model_flavor: str) -
             context_parallel_degree=1,
             expert_parallel_degree=1,
         ),
-        "checkpoint": Checkpoint(
+        "checkpoint": CheckpointManager.Config(
             enable=True,
             initial_load_path=resolved_hf_model_path,
             initial_load_model_only=True,
             initial_load_in_hf=True,
         ),
-        "compile": Compile(
+        "compile": CompileConfig(
             enable=False,
         ),
     }

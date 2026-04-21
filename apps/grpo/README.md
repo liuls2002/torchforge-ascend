@@ -58,7 +58,13 @@ For **Llama 3.1 8B**, training rewards should rise above 0.8 within the first fe
 
 ## Configurations
 
-- `llama3_8b.yaml` - Meta Llama 3.1 8B Instruct
-- `qwen3_1_7b.yaml` - Qwen3 1.7B
-- `qwen3_8b.yaml` - Qwen3 8B
-- `qwen3_32b.yaml` - Qwen3 32B
+YAML files under `apps/grpo/` configure rollout (`generator`, `dataset`), replay, and
+policy training. The **`trainer`** and **`ref_model`** sections map to the same fields
+as torchtitan `ForgeEngine.Config` (via `src/forge/forge_engine_config.py`): `dump_folder`,
+`model` (`name`, `flavor`, `hf_assets_path` for `model_registry`), `optimizer`,
+`lr_scheduler`, `training`, `compile`, `parallelism`, `checkpoint`, `activation_checkpoint`,
+`comm`, and optional `debug`.
+
+- `llama3_8b.yaml` — Meta Llama 3.1 8B Instruct
+- `qwen3_1_7b.yaml` — Qwen3 1.7B
+- `qwen3_8b.yaml` — Qwen3 8B

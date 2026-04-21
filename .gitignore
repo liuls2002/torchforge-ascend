@@ -203,3 +203,7 @@ assets/wheels/vllm*.whl
 
 # enroot / sqsh
 *.sqsh
+
+deps/
+checkpoint/
+Intro.md

@@ -76,7 +76,7 @@ class Generator(ForgeActor):
 
     engine_args: EngineArgs | Mapping = field(default_factory=EngineArgs)
     sampling_params: SamplingParams | Mapping = field(default_factory=SamplingParams)
-    prefetch_weights_to_shm: bool = True
+    prefetch_weights_to_shm: bool = False
     n_fetcher_procs: int = 8
 
     def __post_init__(self):
@@ -242,6 +242,14 @@ class Generator(ForgeActor):
             "forge.actors.vllm.v1.forge_executor.ForgeMonarchExecutor"
         )
 
+        # `create_engine_config()` ran before we switched backends; vLLM may have enabled
+        # async_scheduling for the *default* executor (e.g. multiproc). Monarch ships
+        # worker outputs through RPC (pickle); async scheduling can attach objects such
+        # as torch.Event that are not serializable — force sync scheduling.
+        self.vllm_config.scheduler_config.async_scheduling = False
+        if self.vllm_config.parallel_config.data_parallel_size <= 1:
+            self.vllm_config.parallel_config.disable_nccl_for_dp_synchronization = False
+
         # Set up prefetching configuration via additional_config
         # There does not seem to be  a real difference between pass by env var or via self.vllm_config
         if self.prefetch_weights_to_shm:
@@ -389,12 +397,8 @@ class Generator(ForgeActor):
         return completions
 
     @endpoint
-    async def stop(self):
-        """Stop the generator and cleanup local resources.
-
-        This method is idempotent and can be called multiple times safely.
-        Note: Remote worker cleanup happens in shutdown() which has access to the proxy.
-        """
+    async def stop_engine(self):
+        """Stop AsyncLLM and local fetchers (endpoint; not named ``stop`` — that collides with ActorMesh.stop)."""
         if self.fetcher_procs is not None:
             try:
                 await self.fetcher_procs.stop()
@@ -409,7 +413,7 @@ class Generator(ForgeActor):
             logger.info("AsyncLLM.shutdown() returned")
             self.llm = None
 
-        logger.info("stop() complete")
+        logger.info("stop_engine() complete")
 
     @classmethod
     async def shutdown(cls, actor):
@@ -421,9 +425,9 @@ class Generator(ForgeActor):
         2. Stop generator_proc
         """
         try:
-            await actor.stop.call()
+            await actor.stop_engine.call()
         except Exception as e:
-            logger.warning(f"Error during actor.stop: {e}")
+            logger.warning(f"Error during actor.stop_engine: {e}")
 
         try:
             if getattr(actor, "_generator_proc", None):

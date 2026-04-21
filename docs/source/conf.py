@@ -19,6 +19,13 @@ import pytorch_sphinx_theme2
 # Add the source directory to Python path so modules can be imported
 sys.path.insert(0, os.path.abspath("../../src/forge"))
 
+# Vendored torchtitan (if present) so autoclass can resolve `torchtitan.*` without a
+# separate pip install during local doc builds.
+_docs_repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
+_vendored_torchtitan = os.path.join(_docs_repo_root, "deps", "torchtitan")
+if os.path.isdir(os.path.join(_vendored_torchtitan, "torchtitan")):
+    sys.path.insert(0, _vendored_torchtitan)
+
 
 # Determine the version path for deployment
 def get_version_path():

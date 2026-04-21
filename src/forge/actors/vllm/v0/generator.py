@@ -503,7 +503,8 @@ class Generator(ForgeActor):
         return self.generator_version
 
     @endpoint
-    async def stop(self):
+    async def stop_engine(self):
+        """Tear down inference-side state (not named ``stop`` — collides with ActorMesh.stop)."""
         self.running = False
         # Stop the fetcher procs from within the actor where they were created
         if self._fetcher_procs is not None:
@@ -556,7 +557,7 @@ class Generator(ForgeActor):
 
         # TODO - may want to expand stop to gracefully respond to
         # ongoing requests.
-        await actor.stop.call()
+        await actor.stop_engine.call()
         await stop_proc_mesh(actor._worker_procs)
         await stop_proc_mesh(actor._generator_proc)
 

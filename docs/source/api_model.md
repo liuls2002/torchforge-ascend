@@ -18,12 +18,16 @@ log probabilities for computing KL divergence and other RL metrics.
    :show-inheritance:
 ```
 
-The ReferenceModel uses a subset of TorchTitan's configuration system:
+The ReferenceModel builds `torchtitan.experiments.forge.engine.ForgeEngine` from the same
+**`ForgeEngine.Config`** pieces as training: `model` is resolved via `ForgeModelIdentity`
+(`name`, `flavor`, `hf_assets_path`) and `torchtitan.models.<arch>.model_registry`; other
+fields use public TorchTitan dataclasses, for example:
 
-- **model**: Model architecture settings (Model dataclass)
-- **parallelism**: Parallelism configuration for distributed inference (Parallelism dataclass)
-- **checkpoint**: Checkpoint loading settings (Checkpoint dataclass)
-- **compile**: Model compilation settings (Compile dataclass)
-- **training**: Training configuration for dtype and other settings (Training dataclass)
+- **parallelism**: `torchtitan.config.configs.ParallelismConfig`
+- **checkpoint**: `torchtitan.components.checkpoint.CheckpointManager.Config`
+- **compile**: `torchtitan.config.configs.CompileConfig`
+- **training**: `torchtitan.config.configs.TrainingConfig`
 
-For detailed configuration options, refer to the [TorchTitan documentation](https://github.com/pytorch/torchtitan).
+See `forge.forge_engine_config.forge_engine_config_for_rl_reference` and the
+{doc}`Trainer <api_trainer>` page for the full list. For upstream TorchTitan details, see the
+[TorchTitan repository](https://github.com/pytorch/torchtitan).

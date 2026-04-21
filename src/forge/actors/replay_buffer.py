@@ -7,7 +7,7 @@
 import logging
 import random
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from operator import itemgetter
 from typing import Any, Callable
 
@@ -39,6 +39,30 @@ def age_evict(
     return indices
 
 
+def gradient_accumulation_steps_from_global_batch(
+    global_batch_size: int, local_batch_size: int, dp_size: int
+) -> int:
+    """Match ``ForgeEngine`` (torchtitan): ``effective_gbs // (local_batch_size * dp_size)``.
+
+    When ``global_batch_size < 0``, ``effective_gbs`` is ``local_batch_size * dp_size`` (ga = 1).
+    """
+    denom = local_batch_size * dp_size
+    if denom <= 0:
+        raise ValueError("local_batch_size and dp_size must be positive")
+    if global_batch_size < 0:
+        effective = denom
+    else:
+        effective = global_batch_size
+    if effective <= 0:
+        raise ValueError("global_batch_size must be -1 or a positive multiple of local_batch_size * dp_size")
+    if effective % denom != 0:
+        raise ValueError(
+            f"global_batch_size ({global_batch_size}) implies effective batch {effective} "
+            f"not divisible by local_batch_size * dp_size ({denom})"
+        )
+    return effective // denom
+
+
 def random_sample(buffer: deque, sample_size: int, policy_version: int) -> list[int]:
     """Buffer random sampling policy"""
     if sample_size > len(buffer):
@@ -48,10 +72,21 @@ def random_sample(buffer: deque, sample_size: int, policy_version: int) -> list[
 
 @dataclass
 class ReplayBuffer(ForgeActor):
-    """Simple in-memory replay buffer implementation."""
+    """Simple in-memory replay buffer implementation.
+
+    Each DP rank receives ``batch_size * gradient_accumulation_steps`` episodes per
+    ``sample`` call; the trainer splits them into ``gradient_accumulation_steps`` microbatches
+    of size ``batch_size`` (matching ``TrainingConfig.local_batch_size``).
+
+    ``gradient_accumulation_steps`` is derived in ``setup()`` from ``global_batch_size``,
+    ``batch_size``, and ``dp_size``, using the same rule as ``ForgeEngine`` /
+    ``TrainingConfig.global_batch_size``.
+    """
 
     batch_size: int
     dp_size: int = 1
+    global_batch_size: int = -1
+    gradient_accumulation_steps: int = field(init=False, default=1)
     max_policy_age: int | None = None
     max_buffer_size: int | None = None
     max_resample_count: int | None = 0
@@ -62,6 +97,9 @@ class ReplayBuffer(ForgeActor):
 
     @endpoint
     async def setup(self) -> None:
+        self.gradient_accumulation_steps = gradient_accumulation_steps_from_global_batch(
+            self.global_batch_size, self.batch_size, self.dp_size
+        )
         self.buffer: deque = deque(maxlen=self.max_buffer_size)
         if self.seed is None:
             self.seed = random.randint(0, 2**32)
@@ -82,10 +120,10 @@ class ReplayBuffer(ForgeActor):
             curr_policy_version (int): The current policy version.
 
         Returns:
-            A list of sampled episodes with shape (dp_size, bsz, ...) or None if there are not enough episodes in the buffer.
+            A list of sampled episodes with shape (dp_size, bsz * gradient_accumulation_steps, ...) or None if there are not enough episodes in the buffer.
         """
 
-        total_samples = self.dp_size * self.batch_size
+        total_samples = self.global_batch_size # dp_size * batch_size * gradient_accumulation_steps
 
         # Evict episodes
         self._evict(curr_policy_version)
@@ -130,9 +168,9 @@ class ReplayBuffer(ForgeActor):
                 max(sampled_policy_ages),
                 Reduce.MAX,
             )
-        # Reshape into (dp_size, bsz, ...)
+        per_rank = self.batch_size * self.gradient_accumulation_steps
         reshaped_episodes = [
-            sampled_episodes[dp_idx * self.batch_size : (dp_idx + 1) * self.batch_size]
+            sampled_episodes[dp_idx * per_rank : (dp_idx + 1) * per_rank]
             for dp_idx in range(self.dp_size)
         ]
 

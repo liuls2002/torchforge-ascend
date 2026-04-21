@@ -211,11 +211,13 @@ class WorkerWrapper(WorkerWrapperBase, Actor):
     stores).
     """
 
-    def __init__(self, vllm_config):
+    def __init__(self, _vllm_config):
         rank = context().actor_instance.rank.rank
+        # Executor still spawns with VllmConfig, but WorkerWrapperBase (current vLLM)
+        # only records ranks; config is applied in init_worker(all_kwargs).
         # rpc_rank: rank within this executor (0 to num_workers-1)
         # global_rank: rank in distributed group (same as rpc_rank for single executor)
-        WorkerWrapperBase.__init__(self, vllm_config, rpc_rank=rank, global_rank=rank)
+        WorkerWrapperBase.__init__(self, rpc_rank=rank, global_rank=rank)
         Actor.__init__(self)
 
     def init_worker(self, all_kwargs):

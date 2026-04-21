@@ -1,7 +1,10 @@
 # Grouped Relative Policy Optimization (GRPO)
 # >>> python -m apps.grpo.main --config apps/grpo/qwen3_8b.yaml
+#
+# Trainer/ref_model blocks follow torchtitan ForgeEngine.Config:
+#   dump_folder, model (name/flavor/hf_assets_path), optimizer, lr_scheduler, training,
+#   compile, parallelism, checkpoint, activation_checkpoint, comm.
 
-# Global configuration
 group_size: 8
 local_batch_size: 8 # per-device batch size
 max_req_tokens: 1024
@@ -10,7 +13,6 @@ model: "Qwen/Qwen3-8B"
 off_by_n: 1 # Off by one by default
 compile: true # Enable torch.compile for trainer/ref_model, and CUDA graphs for vLLM
 
-# Observability configuration
 metric_logging:
   wandb:
     project: grpo-training
@@ -19,7 +21,6 @@ metric_logging:
   console:
     logging_mode: global_reduce
 
-# Dataset configuration
 dataset:
   path: "openai/gsm8k"
   revision: "main"
@@ -27,22 +28,21 @@ dataset:
   streaming: true
   model: ${model}
 
-# Generator configuration
 generator:
-  engine_args:  # https://docs.vllm.ai/en/v0.10.0/api/vllm/engine/arg_utils.html#vllm.engine.arg_utils.EngineArgs
+  engine_args:
     model: ${model}
     tensor_parallel_size: 2
     pipeline_parallel_size: 1
     enforce_eager: ${not:${compile}}
-  sampling_params:  # https://docs.vllm.ai/en/v0.10.0/api/vllm/sampling_params.html#vllm.sampling_params.SamplingParams
+  sampling_params:
     n: ${group_size}
     max_tokens: ${max_res_tokens}
     temperature: 1.0
     top_p: 1.0
-    logprobs: 1  # returns log probabilities for sampled tokens
+    logprobs: 1
 
-# Trainer configuration
 trainer:
+  dump_folder: "."
   model:
     name: qwen3
     flavor: 8B
@@ -55,7 +55,8 @@ trainer:
     warmup_steps: 1
   training:
     local_batch_size: ${local_batch_size}
-    seq_len: ${sum:${max_req_tokens},${max_res_tokens}}  # seq_len >= max_req_tokens + max_res_tokens
+    global_batch_size: -1
+    seq_len: ${sum:${max_req_tokens},${max_res_tokens}}
     max_norm: 1.0
     steps: 1000000
     dtype: bfloat16
@@ -72,27 +73,25 @@ trainer:
     disable_loss_parallel: true
   checkpoint:
     enable: true
-    folder: ./checkpoint              # The folder to save checkpoints to.
-    initial_load_path: hf://${model}  # The path to load the initial checkpoint from. Ignored if `folder` exists.
-    initial_load_in_hf: true          # If true, interpret initial_load_path as a HuggingFace model repo
+    folder: ./checkpoint
+    initial_load_path: hf://${model}
+    initial_load_in_hf: true
     last_save_in_hf: true
     interval: 500
     async_mode: "disabled"
   activation_checkpoint:
     mode: selective
-    selective_ac_option: op
+  comm:
+    trace_buf_size: 0
 
-# Replay buffer configuration
 replay_buffer:
   batch_size: ${local_batch_size}
   max_policy_age: ${off_by_n}
-  # This should match the dp_size of TorchTitan
-  # Here it's set explicitly to 2, because we've set
-  # 2 GPUs for the trainer and we're using full FSDP.
   dp_size: 2
+  global_batch_size: ${trainer.training.global_batch_size}
 
-# Reference model configuration (if enabled in services)
 ref_model:
+  dump_folder: "."
   model:
     name: qwen3
     flavor: 8B
@@ -114,17 +113,10 @@ ref_model:
     enable: true
     initial_load_path: hf://${model}
     initial_load_in_hf: true
+  comm:
+    trace_buf_size: 0
 
-# All resource allocations
 services:
-  # Ref model is only necessary if the loss requires it (GRPO with beta>0),
-  # but we recommend using DAPO instead
-  # ref_model:
-  #   ref_model:
-  #     procs: 1
-  #     num_replicas: 1
-  #     with_gpus: true
-  #     mesh_name: ref_model
   generator:
     procs: ${generator.engine_args.tensor_parallel_size}
     num_replicas: 1

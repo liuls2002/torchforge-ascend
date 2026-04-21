@@ -4,7 +4,6 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-
 import logging
 import math
 import os
@@ -13,21 +12,27 @@ from dataclasses import dataclass, field, fields
 
 import torch
 from forge.controller import ForgeActor
+from forge.forge_engine_config import (
+    ForgeModelIdentity,
+    forge_engine_config_for_rl_reference,
+)
 from forge.observability.metrics import record_metric, Reduce
 from forge.observability.perf_tracker import Tracer
 from forge.rl.loss import compute_logprobs, create_shifted_targets
 from monarch.actor import current_rank, current_size, endpoint
 from torch.distributed.tensor import DTensor
-from torchtitan.config.job_config import (
-    Checkpoint,
-    Comm,
-    Compile,
-    Model,
-    Parallelism,
-    Training,
+from torchtitan.components.checkpoint import CheckpointManager
+from torchtitan.components.lr_scheduler import LRSchedulersContainer
+from torchtitan.components.optimizer import OptimizersContainer
+from torchtitan.config.configs import (
+    ActivationCheckpointConfig,
+    CommConfig,
+    CompileConfig,
+    DebugConfig,
+    ParallelismConfig,
+    TrainingConfig,
 )
 from torchtitan.experiments.forge.engine import ForgeEngine
-from torchtitan.experiments.forge.job_config import ForgeJobConfig
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -35,53 +40,31 @@ logger.setLevel(logging.INFO)
 
 @dataclass
 class ReferenceModel(ForgeActor):
-    """
-    A reference model actor for reinforcement learning (RL) training.
+    """Frozen reference policy on `ForgeEngine` for RL (e.g. logprobs / KL)."""
 
-    Based on TorchTitan's engine architecture, this actor provides a
-    frozen model that only runs forward passes without gradient
-    computation. It is typically used to maintain algorithmic
-    consistency in policy optimization methods such as GRPO
-    (Group Relative Policy Optimization) or PPO (Proximal Policy
-    Optimization), where it serves as a fixed reference point to
-    compute KL divergence penalties against the training policy.
-
-    The reference model is loaded from a checkpoint and runs in
-    evaluation mode with inference_mode enabled to optimize memory and
-    compute efficiency.
-
-    Attributes:
-
-        model (Model): Model configuration (architecture, vocab size,
-        etc.)
-        parallelism (Parallelism): Parallelism strategy configuration
-        (TP, PP, CP, DP)
-        checkpoint (Checkpoint): Checkpoint loading configuration
-        compile (Compile): Torch compilation settings
-        comm (Comm): Communication backend configuration
-        training (Training): Training-related settings (dtype, garbage
-        collection, etc.)
-    """
-
-    # Refer to titan JobConfig for enabling more ForgeEngine configuration
-    model: Model = field(default_factory=Model)
-    parallelism: Parallelism = field(default_factory=Parallelism)
-    checkpoint: Checkpoint = field(default_factory=Checkpoint)
-    compile: Compile = field(default_factory=Compile)
-    comm: Comm = field(default_factory=Comm)
-    training: Training = field(
-        default_factory=Training
-    )  # Needed in order to set attrs like dtype, garbage collection freq, etc.
-
-    # Populated in setup
-    # TODO: Commented out since engine_config parsing extracts from class members
-    # engine: ForgeEngine | None = None
+    dump_folder: str = "."
+    model: ForgeModelIdentity = field(default_factory=ForgeModelIdentity)
+    optimizer: OptimizersContainer.Config = field(
+        default_factory=OptimizersContainer.Config
+    )
+    lr_scheduler: LRSchedulersContainer.Config = field(
+        default_factory=LRSchedulersContainer.Config
+    )
+    parallelism: ParallelismConfig = field(default_factory=ParallelismConfig)
+    checkpoint: CheckpointManager.Config = field(
+        default_factory=CheckpointManager.Config
+    )
+    activation_checkpoint: ActivationCheckpointConfig = field(
+        default_factory=ActivationCheckpointConfig
+    )
+    compile: CompileConfig = field(default_factory=CompileConfig)
+    comm: CommConfig = field(default_factory=CommConfig)
+    debug: DebugConfig = field(default_factory=DebugConfig)
+    training: TrainingConfig = field(default_factory=TrainingConfig)
 
     def __post_init__(self):
-        """Initializes config types and env variables."""
         super().__init__()
 
-        # Instantiate dict fields
         for f in fields(self):
             attr = getattr(self, f.name)
             if isinstance(attr, Mapping):
@@ -115,32 +98,29 @@ class ReferenceModel(ForgeActor):
 
     @endpoint
     async def setup(self):
-        engine_config = {f.name: getattr(self, f.name) for f in fields(self)}
-        engine_config = ForgeJobConfig(**engine_config)
-        engine_config.checkpoint.folder = (
-            ""  # hardcode to empty to force load from initial_load_path
+        self.engine = ForgeEngine(
+            forge_engine_config_for_rl_reference(
+                dump_folder=self.dump_folder,
+                model=self.model,
+                optimizer=self.optimizer,
+                lr_scheduler=self.lr_scheduler,
+                training=self.training,
+                parallelism=self.parallelism,
+                checkpoint=self.checkpoint,
+                activation_checkpoint=self.activation_checkpoint,
+                compile=self.compile,
+                comm=self.comm,
+                debug=self.debug,
+            )
         )
-        self.engine = ForgeEngine(engine_config)
-        self.engine.checkpointer.load()
-        self.model = self.engine.model_parts[0]  # No pipeline parallelism yet
+        self.engine.checkpointer.load(step=self.step)
+        self.model = self.engine.model_parts[0]
         self.model.eval()
 
     @endpoint
     async def forward(
         self, input_ids: torch.Tensor, return_logprobs: bool = True
     ) -> torch.Tensor:
-        """
-        Args:
-            input_ids (torch.Tensor): input token ids with shape [group_size, seq_len].
-            return_logprobs (bool): whether to return log probabilities instead of raw logits.
-
-            return_logprobs flag significantly impacts the amount of data transferred to the caller:
-            - When False: Returns logits with shape [group_size, seq_len, vocab_size].
-              This includes the full vocabulary distribution for each token position.
-
-            - When True: Returns log probabilities with shape [group_size, seq_len].
-              Prompt positions will have logprobs = 0.
-        """
         record_metric("reference_perf/forward/count_forward_passes", 1, Reduce.SUM)
 
         t = Tracer("reference_perf/forward", timer="gpu", track_memory=True)
@@ -148,35 +128,19 @@ class ReferenceModel(ForgeActor):
         self.engine.gc_handler.run(self.step)
 
         model_parts = self.engine.model_parts
-        parallel_dims = self.engine.parallel_dims
-        input_ids = input_ids.to("cuda")
+        input_ids = input_ids.to(self.engine.device)
 
-        # optional_context_parallel_ctx = (
-        #     dist_utils.create_context_parallel_ctx(
-        #         cp_mesh=parallel_dims.world_mesh["cp"],
-        #         cp_buffers=[inputs, labels] + [m.freqs_cis for m in model_parts],
-        #         cp_seq_dims=[1, 1] + [0 for _ in model_parts],
-        #         cp_no_restore_buffers={inputs, labels},
-        #         cp_rotate_method=self.job_config.parallelism.context_parallel_rotate_method,
-        #     )
-        #     if parallel_dims.cp_enabled
-        #     else None
-        # )
-        optional_context_parallel_ctx = None
         if self.engine.parallel_dims.pp_enabled:
             raise NotImplementedError("PP not implemented yet")
         else:
-            # (jackkhuu) Not sure if either context are needed for inference here
-            with self.engine.train_context(optional_context_parallel_ctx):
-                with self.engine.maybe_enable_amp:
-                    with torch.inference_mode():
-                        logits = self.model(input_ids)
-
-                        if return_logprobs:
-                            target_ids = create_shifted_targets(input_ids)
-                            logprobs, _ = self.compute_logprobs(logits, target_ids)
-
-        out = logprobs if return_logprobs else logits
+            with self.engine.train_context():
+                with torch.inference_mode():
+                    logits = model_parts[0](input_ids)
+                    if return_logprobs:
+                        target_ids = create_shifted_targets(input_ids)
+                        out, _ = self.compute_logprobs(logits, target_ids)
+                    else:
+                        out = logits
 
         if isinstance(out, DTensor):
             out = out.full_tensor()

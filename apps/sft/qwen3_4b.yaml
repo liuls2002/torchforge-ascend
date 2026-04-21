@@ -1,13 +1,11 @@
-# >>> python -m apps.sft.main --config apps/sft/qwen3_8b.yaml
+# >>> python -m apps.sft.main --config apps/sft/qwen3_4b.yaml
 #
-# Layout matches torchtitan ForgeEngine.Config: dump_folder, compile, training (no datasets),
-# parallelism, checkpoint, activation_checkpoint, comm, optimizer, lr_scheduler.
-# SFT-only keys: model_name, model.*, training.datasets, eval.*, processes, metric_logging.
+# Layout matches torchtitan ForgeEngine.Config (see qwen3_8b.yaml header).
 
 comm:
   trace_buf_size: 0
 
-model_name: "Qwen/Qwen3-8B"
+model_name: "/ssd/liuls/data/hub/Qwen3-4B-Instruct-2507"
 
 dump_folder: "."
 
@@ -16,11 +14,11 @@ compile:
 
 model:
   name: qwen3
-  flavor: 8B
-  hf_assets_path: hf://${model_name}
+  flavor: 4B
+  hf_assets_path: ${model_name}
 
 processes:
-  procs: 8
+  procs: 4
   with_gpus: true
 
 optimizer:
@@ -32,7 +30,7 @@ lr_scheduler:
   warmup_steps: 200
 
 training:
-  local_batch_size: 8
+  local_batch_size: 2
   seq_len: 2048
   max_norm: 1.0
   steps: 1000
@@ -58,8 +56,8 @@ parallelism:
 
 checkpoint:
   enable: true
-  folder: ./checkpoint              # under dump_folder: {dump_folder}/{checkpoint.folder}
-  initial_load_path: hf://${model_name}
+  folder: ./checkpoint_qwen3_4b
+  initial_load_path: ${model_name}
   initial_load_in_hf: true
   last_save_in_hf: true
   interval: 500

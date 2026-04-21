@@ -25,7 +25,7 @@ from monarch.actor import (
     shutdown_context,
     this_host,
 )
-from monarch.utils import setup_env_for_distributed
+from monarch.spmd import setup_torch_elastic_env_async
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -426,7 +426,7 @@ class Provisioner:
 
             # Set up PyTorch distributed environment if using GPUs
             if with_gpus:
-                await setup_env_for_distributed(
+                await setup_torch_elastic_env_async(
                     procs,
                     master_addr=addr,
                     master_port=int(port),

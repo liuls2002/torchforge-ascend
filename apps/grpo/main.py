@@ -4,7 +4,16 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-# Usage: python -m apps.grpo.main --config apps/grpo/qwen3_1_7b.yaml
+"""GRPO entrypoint.
+
+`trainer` / `ref_model` YAML blocks are passed to `TitanTrainer` and `ReferenceModel`
+(`forge.actors.trainer` / `forge.actors.reference_model`). Those actors build
+`torchtitan.experiments.forge.engine.ForgeEngine` from `ForgeEngine.Config`, using
+`forge.forge_engine_config` (`ForgeModelIdentity`, `forge_engine_config_for_rl_*`)
+and public torchtitan dataclasses only (`TrainingConfig`, `CheckpointManager.Config`, …).
+
+Usage: python -m apps.grpo.main --config apps/grpo/qwen3_1_7b.yaml
+"""
 
 import asyncio
 import traceback
@@ -30,6 +39,7 @@ from forge.types import LauncherConfig, ProvisionerConfig
 from forge.util.config import parse
 from forge.util.logging import get_logger
 from omegaconf import DictConfig, OmegaConf
+
 
 logger = get_logger("INFO")
 
@@ -88,6 +98,9 @@ async def main(cfg: DictConfig):
     async def noop():
         return None
 
+    rb_cfg = OmegaConf.to_container(cfg.replay_buffer, resolve=True)
+    replay_buffer_kwargs = dict(rb_cfg) if isinstance(rb_cfg, dict) else {}
+
     (
         dataloader,
         generator,
@@ -103,7 +116,8 @@ async def main(cfg: DictConfig):
             **cfg.trainer, loss=loss_fn
         ),
         ReplayBuffer.options(**cfg.actors.replay_buffer).as_actor(
-            **cfg.replay_buffer, collate=collate
+            **replay_buffer_kwargs,
+            collate=collate,
         ),
         ComputeAdvantages.options(**cfg.actors.compute_advantages).as_actor(),
         (
@@ -152,7 +166,10 @@ async def main(cfg: DictConfig):
                 return
 
             prompt, target = sample["request"], sample["target"]
-            responses: list[Completion] = await generator.generate.route(prompt)
+            responses_raw = await generator.generate.route(prompt)
+            if isinstance(responses_raw, BaseException):
+                raise responses_raw
+            responses: list[Completion] = responses_raw
             t.step("policy_generation")
 
             # Construct episodes and calculate rewards

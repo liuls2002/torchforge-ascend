@@ -315,3 +315,4 @@ def parse(recipe_main: Any) -> Callable[..., Any]:
         sys.exit(recipe_main(conf))
 
     return wrapper
+
